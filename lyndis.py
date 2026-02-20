@@ -93,13 +93,15 @@ class LynSection:
     base_data: bytearray
     relocations: list[LynRelocation]
     addr: int | None
+    align: int
     do_not_place: bool
 
-    def __init__(self, name: str, base_data: bytes) -> None:
+    def __init__(self, name: str, base_data: bytes, align: int = 4) -> None:
         self.name = name
         self.base_data = bytearray(base_data)
         self.relocations = []  # to be populated
         self.addr = None
+        self.align = align
         self.do_not_place = False
 
     def __repr__(self):
@@ -204,7 +206,7 @@ def add_elf(elf_io: BinaryIO, elf_name: str | None):
                 f"{section.name}({elf_name})" if elf_name is not None else section.name
             )
 
-            lyn_sec = LynSection(sec_name, section.data())
+            lyn_sec = LynSection(sec_name, section.data(), section["sh_addralign"])
             elf_to_lyn_section[i] = len(section_table)
             section_table.append(lyn_sec)
 
@@ -557,7 +559,7 @@ def split_free_regions_at_fixed_sections():
 
             # - the section overlaps the entirety of the free region
             if beg_addr <= free_addr and end_addr >= free_end:
-                free_regions[j] = (free_addr, 0)
+                free_regions[j] = (beg_addr, 0)
 
             # - the section overlaps the start of the free region
             elif beg_addr <= free_addr and end_addr > free_addr:
@@ -595,6 +597,12 @@ def set_not_fixed_section_addrs():
 
         if sec.addr is None and this_size > 0:
             for j, (addr, size) in enumerate(free_regions):
+                # make sure we would start at a appropriately aligned addr
+                if (addr % sec.align) != 0:
+                    offset_for_align = sec.align - addr % sec.align
+                    addr += offset_for_align
+                    size -= offset_for_align
+
                 if size < this_size:
                     continue
 
