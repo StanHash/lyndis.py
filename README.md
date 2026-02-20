@@ -38,9 +38,8 @@ lyn_at(0x0800048C) void NewFunction(void)
 lyn_at(0x08000C84) [[gnu::naked]] void hook_08000C84(void)
 {
     /* dummy out a few instructions, as an example */
-    asm("\
-        nop\n\
-        nop\n\");
+    asm("nop\n"
+        "nop\n");
 }
 ```
 

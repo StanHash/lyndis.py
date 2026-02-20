@@ -372,41 +372,47 @@ def handle_directive_replace(m, idx, sec):
     #   if name is function, insert veneer
     #   if name is object, error
 
-    do_not_free = False
+    purge_size = sym.size  # purge_size is the size we can mark as free
 
-    if sym.size == 0:
+    if purge_size == 0:
         if sym_idx < len(reference_symbols) - 1:
             next_sym = reference_symbols[sym_idx + 1]
             max_size = next_sym.addr - sym.addr
-            do_not_free = True  # do not free the 'remaining' free space
         else:
             # case where we are replacing the very last reference symbol
             # leave enough room for a trampoline
             max_size = 0xC
-            do_not_free = True
 
     else:
-        max_size = sym.size
+        max_size = purge_size
 
     replace_addr = sym.addr
-    remains = 0
 
     if sym.is_func:
         # remove thumb bit
         replace_addr = replace_addr & ~1
+
+    # find any fixed ("at") section that's already within the range here
+    # and reduce the max_size accordingly
+    for other_sec in section_table:
+        if other_sec.addr is not None:
+            other_addr = other_sec.addr
+
+            if other_addr >= replace_addr and other_addr < replace_addr + max_size:
+                max_size = other_addr - replace_addr
 
     if len(sec.base_data) <= max_size:
         # the section fits inline, which is nice
         sec.addr = replace_addr
         sym.is_replaced = True
 
-        remains = max_size - len(sec.base_data)
+        remains = purge_size - len(sec.base_data)
 
-        if not do_not_free and remains > 0:
-            free_regions.append((replace_addr + max_size - remains, remains))
+        if remains > 0:
+            free_regions.append((replace_addr + purge_size - remains, remains))
 
     else:
-        if sym.is_func and max_size >= 0x10:
+        if sym.is_func and max_size >= 0x0C:
             # case of function: insert trampoline
 
             # find head symbol of section
@@ -435,9 +441,7 @@ def handle_directive_replace(m, idx, sec):
                     # R_ARM_ABS32 2 @ +0x0C
                     trampoline_rel = LynRelocation(0x0C, target_sym_idx, None, 2)
 
-                elif (
-                    max_size >= 0x0C and (symbol_table[target_sym_idx].offset & 1) == 1
-                ):
+                elif (symbol_table[target_sym_idx].offset & 1) == 1:
                     # packed slow thm->thm trampoline (12 bytes)
                     trampoline_sec = LynSection(trampoline_name, LYN_JUMP_BASE_THM2THM)
                     # R_ARM_ABS32 2 @ +0x08
@@ -450,10 +454,10 @@ def handle_directive_replace(m, idx, sec):
 
                 generated_sections.append(trampoline_sec)
 
-                remains = max_size - 0x10
+                remains = purge_size - len(trampoline_sec.base_data)
 
-                if not do_not_free and remains > 0:
-                    free_regions.append((replace_addr + max_size - remains, remains))
+                if remains > 0:
+                    free_regions.append((replace_addr + purge_size - remains, remains))
 
         else:
             print(
@@ -496,9 +500,9 @@ def handle_directive_meta(m, idx, sec: LynSection):
 
 
 DIRECTIVES = [
+    (RE_LYN_META, handle_directive_meta),
     (RE_LYN_AT, handle_directive_at),
     (RE_LYN_REPLACE, handle_directive_replace),
-    (RE_LYN_META, handle_directive_meta),
 ]
 
 
@@ -506,33 +510,83 @@ def set_fixed_section_addrs():
     # we may be adding trampolines during this, but we don't care about them
     len_without_trampolines = len(section_table)
 
-    for i in range(len_without_trampolines):
-        sec = section_table[i]
+    # handle in directives order rather than section order
+    # we need all "at" directives to be handled before "replace"
+    # to reduce possibilities of overlaps from inplace replaces
+    # (ideally those at sections would be "weak" and replace takes prio but lazy)
 
-        m = RE_LYN_DIRECTIVE.match(sec.name)
+    handled = {}
 
-        if m is not None:
-            directive = m.group("directive")
-            handled = False
+    for directive_regexp, directive_handler in DIRECTIVES:
+        for i in range(len_without_trampolines):
+            if i in handled and handled[i][1]:
+                continue
 
-            for regexp, handle in DIRECTIVES:
-                m = regexp.match(directive)
+            sec = section_table[i]
+
+            m = RE_LYN_DIRECTIVE.match(sec.name)
+
+            if m is not None:
+                directive = m.group("directive")
+
+                if i not in handled:
+                    handled[i] = (directive, False)
+
+                m = directive_regexp.match(directive)
 
                 if m is not None:
-                    handle(m, i, sec)
-                    handled = True
-                    break
+                    directive_handler(m, i, sec)
+                    handled[i] = (directive, True)
 
-            if not handled:
-                print(f"Unknown lyn directive: {directive}")
-                exit(1)
+            else:
+                pass
+                # print(f"No match: {sec.name}")
 
-        else:
-            pass
-            # print(f"No match: {sec.name}")
+    all_success = True
+
+    for i in handled:
+        (directive, success) = handled[i]
+
+        if not success:
+            print(f"Unknown lyn directive: {directive}")
+            all_success = False
+
+    if not all_success:
+        exit(1)
 
     # HACK: generated_sections shouldn't be a thing. We should just have sections be
     section_table.extend(generated_sections)
+
+
+def split_free_region_at_range(addr: int, size: int):
+    global free_regions
+
+    beg_addr: int = addr
+    end_addr: int = addr + size
+
+    # not very efficient (on brand for lyndis.py)
+    for j in range(len(free_regions)):
+        (free_addr, free_size) = free_regions[j]
+        free_end: int = free_addr + free_size
+
+        # four possible cases:
+
+        # - the section overlaps the entirety of the free region
+        if beg_addr <= free_addr and end_addr >= free_end:
+            free_regions[j] = (beg_addr, 0)
+
+        # - the section overlaps the start of the free region
+        elif beg_addr <= free_addr and end_addr > free_addr:
+            free_regions[j] = (end_addr, free_end - end_addr)
+
+        # - the section overlaps the end of the free region
+        elif beg_addr < free_end and end_addr >= free_end:
+            free_regions[j] = (free_addr, beg_addr - free_addr)
+
+        # - the section overlaps the middle of the free region
+        elif beg_addr < free_end and end_addr > free_addr:
+            free_regions[j] = (free_addr, beg_addr - free_addr)
+            free_regions.append((end_addr, free_end - end_addr))
 
 
 def split_free_regions_at_fixed_sections():
@@ -547,32 +601,7 @@ def split_free_regions_at_fixed_sections():
         if sec.addr is None:
             continue
 
-        beg_addr: int = sec.addr
-        end_addr: int = beg_addr + len(sec.base_data)
-
-        # not very efficient (on brand for lyndis.py)
-        for j in range(len(free_regions)):
-            (free_addr, free_size) = free_regions[j]
-            free_end: int = free_addr + free_size
-
-            # four possible cases:
-
-            # - the section overlaps the entirety of the free region
-            if beg_addr <= free_addr and end_addr >= free_end:
-                free_regions[j] = (beg_addr, 0)
-
-            # - the section overlaps the start of the free region
-            elif beg_addr <= free_addr and end_addr > free_addr:
-                free_regions[j] = (end_addr, free_end - end_addr)
-
-            # - the section overlaps the end of the free region
-            elif beg_addr < free_end and end_addr >= free_end:
-                free_regions[j] = (free_addr, beg_addr - free_addr)
-
-            # - the section overlaps the middle of the free region
-            elif beg_addr < free_end and end_addr > free_addr:
-                free_regions[j] = (free_addr, beg_addr - free_addr)
-                free_regions.append((end_addr, free_end - end_addr))
+        split_free_region_at_range(sec.addr, len(sec.base_data))
 
 
 def set_not_fixed_section_addrs():
