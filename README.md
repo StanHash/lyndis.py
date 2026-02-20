@@ -2,7 +2,7 @@
 
 A prototypal "patching linker", which links object files directly to an existing binary. It was designed as a binary ROM hacking tool, targeting GBA ROMs in particular. For that reason, it only handles 32bit ARM objects.
 
-This is very experimental, not very stable, full of hacks (and probably full of bugs as well), has very bad error handling/reporting, and lacks documentation. **Use at your own risk**.
+This is very experimental, not very stable, full of hacks (and probably full of bugs as well), has very bad error handling/reporting, lacks documentation, and has barely been used in any kind of significant work. (Have fun!)
 
 ## Usage
 
@@ -23,6 +23,9 @@ lyn_free(0x09000000, 0x01000000);
 
 /* Replace a string pointer at a specific location */
 lyn_at(0x0800ABDC) char const * const my_new_string_pointer = "Hello World!";
+
+/* Replace a string pointer at a specific location using shorter helper */
+lyn_addr_at(0x0800ACDC) = "Hello World!";
 
 /* Replace a function at a specific location */
 lyn_at(0x0800048C) void NewFunction(void)
@@ -100,7 +103,9 @@ List of supported directives:
 
 ## Relation to "lyn"
 
-The name of this tool is "lyndis", which implies a connection with another related but different tool I have written named "[lyn](https://github.com/StanHash/lyn)". Both of these tools take the same kind of input (object files), but have different targets:
+The name of this tool is "lyndis", which implies a connection with another related but different tool I have written named "[lyn](https://github.com/StanHash/lyn)".
+
+Both of these tools take the same kind of input (object files), but have different targets:
 
 - lyn produces event files to be fed to Event Assembler, which allowed the use of conventional toolchains (GCC...) within exisiting ROM hacking environments. (EA-based GBAFE hacking was especially popular at the time lyn was originally written).
 - lyndis is a standalone tool, that forgoes EA entirely and simply patches the ROM itself directly.
@@ -109,7 +114,7 @@ A planned rewrite of the original lyn ("lyn 3") was meant to be able to understa
 
 This python implementation of lyndis was meant as a prototype implementation of a better, cleaner version probably written in C++ like the original lyn. This is why this is "lyndis.py" and not just "lyndis".
 
-As with lyn, the name "lyndis" is meant to be stylized with a lowercase 'L'.
+As with lyn, the name "lyndis" is meant to be stylized with a lowercase 'L'. This is to distinguish the name of the tools from the name of everybody's favorite tutorial lord.
 
 ## License
 

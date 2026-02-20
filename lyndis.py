@@ -151,7 +151,7 @@ def add_global_symbol(lyn_symbol: LynSymbol) -> int:
 
         else:
             # TODO: handle weak symbols!
-            print(f"Error: redinition of global symbol (name = {lyn_symbol.name})")
+            print(f"Error: redefinition of global symbol (name = {lyn_symbol.name})")
             return -1
 
     else:
@@ -231,6 +231,10 @@ def add_elf(elf_io: BinaryIO, elf_name: str | None):
 
                 if elf_sec_idx in elf_to_lyn_section:
                     lyn_sec = elf_to_lyn_section[elf_sec_idx]
+
+                    # handle signed offset
+                    if sym_value >= 0x80000000:
+                        sym_value -= 0x100000000
 
                     lyn_sym = LynSymbol(sym_name, lyn_sec, sym_value)
 
@@ -319,8 +323,32 @@ def handle_directive_at(m, idx, sec):
 generated_sections = []
 
 
+# NOTE: most of these are unused for now
+
 # bx pc ; nop ; ldr ip, lit ; bx ip ; lit: .word 0
 LYN_JUMP_BASE = b"\x78\x47\xc0\x46\x00\xc0\x9f\xe5\x1c\xff\x2f\xe1\x00\x00\x00\x00"
+
+# bx pc ; nop
+LYN_JUMP_BXPC_THM = b"\x78\x47\xc0\x46"
+
+# push {r4, r5} ; ldr r4, lit ; str r4, [sp, #4] ; pop {r4, pc} ; lit: .word 0
+LYN_JUMP_BASE_THM2THM = b"\x30\xb4\x01\x4c\x01\x94\x10\xbd\x00\x00\x00\x00"
+
+# ldr ip, lit ; bx ip ; lit: .word 0
+LYN_JUMP_BASE_ARM2ANY = b"\x00\xc0\x9f\xe5\x1c\xff\x2f\xe1\x00\x00\x00\x00"
+
+# ldr pc, lit ; lit: .word 0
+LYN_JUMP_BASE_ARM2ARM = b"\x04\xf0\x1f\xe5\x00\x00\x00\x00"
+
+LYN_JUMP_BASE_THM2ANY = LYN_JUMP_BXPC_THM + LYN_JUMP_BASE_ARM2ANY
+LYN_JUMP_BASE_THM2ARM = LYN_JUMP_BXPC_THM + LYN_JUMP_BASE_ARM2ARM
+
+LYN_JUMP_MAP = {
+    ("thm", "thm"): LYN_JUMP_BASE_THM2ANY,
+    ("thm", "arm"): LYN_JUMP_BASE_THM2ARM,
+    ("arm", "thm"): LYN_JUMP_BASE_ARM2ANY,
+    ("arm", "arm"): LYN_JUMP_BASE_ARM2ARM,
+}
 
 
 def handle_directive_replace(m, idx, sec):
@@ -349,6 +377,11 @@ def handle_directive_replace(m, idx, sec):
             next_sym = reference_symbols[sym_idx + 1]
             max_size = next_sym.addr - sym.addr
             do_not_free = True  # do not free the 'remaining' free space
+        else:
+            # case where we are replacing the very last reference symbol
+            # leave enough room for a trampoline
+            max_size = 0xC
+            do_not_free = True
 
     else:
         max_size = sym.size
@@ -390,14 +423,25 @@ def handle_directive_replace(m, idx, sec):
             if target_sym_idx >= 0:
                 global generated_sections
 
-                trampoline_sec = LynSection(
-                    f"__lyn_generated.jump_to_new_{name}", LYN_JUMP_BASE
-                )
+                trampoline_name = f"__lyn_generated.jump_to_new_{name}"
 
-                # R_ARM_ABS32 2 @ +0x0C
-                trampoline_sec.relocations.append(
-                    LynRelocation(0x0C, target_sym_idx, None, 2)
-                )
+                # TODO: check thumb bit of func we replace
+                # priorities should be: arm2arm, arm2any, thm2arm, thm2any, thm2thm
+                if max_size >= 0x10:
+                    # generic efficient thm->any trampoline (16 bytes)
+                    trampoline_sec = LynSection(trampoline_name, LYN_JUMP_BASE_THM2ANY)
+                    # R_ARM_ABS32 2 @ +0x0C
+                    trampoline_rel = LynRelocation(0x0C, target_sym_idx, None, 2)
+
+                elif (
+                    max_size >= 0x0C and (symbol_table[target_sym_idx].offset & 1) == 1
+                ):
+                    # packed slow thm->thm trampoline (12 bytes)
+                    trampoline_sec = LynSection(trampoline_name, LYN_JUMP_BASE_THM2THM)
+                    # R_ARM_ABS32 2 @ +0x08
+                    trampoline_rel = LynRelocation(0x08, target_sym_idx, None, 2)
+
+                trampoline_sec.relocations.append(trampoline_rel)
 
                 trampoline_sec.addr = replace_addr
                 sym.is_replaced = True
@@ -487,6 +531,46 @@ def set_fixed_section_addrs():
 
     # HACK: generated_sections shouldn't be a thing. We should just have sections be
     section_table.extend(generated_sections)
+
+
+def split_free_regions_at_fixed_sections():
+    """
+    Make it so free sections don't overlap with sections at fixed addrs
+    NOTE: free regions are NOT sorted after this!!!
+    """
+
+    global free_regions
+
+    for i, sec in enumerate(section_table):
+        if sec.addr is None:
+            continue
+
+        beg_addr: int = sec.addr
+        end_addr: int = beg_addr + len(sec.base_data)
+
+        # not very efficient (on brand for lyndis.py)
+        for j in range(len(free_regions)):
+            (free_addr, free_size) = free_regions[j]
+            free_end: int = free_addr + free_size
+
+            # four possible cases:
+
+            # - the section overlaps the entirety of the free region
+            if beg_addr <= free_addr and end_addr >= free_end:
+                free_regions[j] = (free_addr, 0)
+
+            # - the section overlaps the start of the free region
+            elif beg_addr <= free_addr and end_addr > free_addr:
+                free_regions[j] = (end_addr, free_end - end_addr)
+
+            # - the section overlaps the end of the free region
+            elif beg_addr < free_end and end_addr >= free_end:
+                free_regions[j] = (free_addr, beg_addr - free_addr)
+
+            # - the section overlaps the middle of the free region
+            elif beg_addr < free_end and end_addr > free_addr:
+                free_regions[j] = (free_addr, beg_addr - free_addr)
+                free_regions.append((end_addr, free_end - end_addr))
 
 
 def set_not_fixed_section_addrs():
@@ -671,7 +755,34 @@ def compute_relocations():
                     sec.base_data[off : off + 2] = hi.to_bytes(2, "little")
                     sec.base_data[off + 2 : off + 4] = lo.to_bytes(2, "little")
 
-                    pass
+                case 28:  # R_ARM_CALL
+                    base = int.from_bytes(sec.base_data[off : off + 4], "little")
+                    value = lookup_sym_value(rel.symbol) - (sec.addr + off)
+
+                    if rel.addend is None:
+                        addend = (base & 0x00FFFFFF) * 4
+
+                        # account for sign bit
+                        if addend >= 0x2000000 != 0:
+                            addend -= 0x4000000
+
+                    else:
+                        addend = rel.addend
+
+                    complete_value = value + addend
+
+                    if (complete_value < -0x2000000) or (complete_value >= 0x2000000):
+                        target_name = lookup_sym_name(rel.symbol)
+                        print(
+                            f"ERROR: {sec.addr + off:08X}: {sec.name}+{off}: {'target' if target_name is None else target_name} out of BL range (disp: {complete_value:X})"
+                        )
+                        exit(1)
+
+                    complete_ins = (base & 0xFF000000) | (
+                        (complete_value // 4) & 0x00FFFFFF
+                    )
+
+                    sec.base_data[off : off + 4] = complete_ins.to_bytes(4, "little")
 
                 case 40:  # R_ARM_V4BX
                     # do nothing!
@@ -799,6 +910,20 @@ def check_for_overlaps():
         last_tail = head + len(sec_1.base_data)
 
 
+def check_for_redefined_symbols():
+    for name in reference_dict:
+        # ignore replaced (purged) symbols
+        if reference_symbols[reference_dict[name]].is_replaced:
+            continue
+
+        if name in global_symbol_dict:
+            sym_idx = global_symbol_dict[name]
+            lyn_sym = symbol_table[sym_idx]
+
+            if lyn_sym is not None:
+                print(f"ERROR: redefinition of reference symbol (name = {name})")
+
+
 def produce_map_file(file_path: str):
     # sections ordered by address
     sec_idxes = sorted(
@@ -816,19 +941,14 @@ def produce_map_file(file_path: str):
             and symbol_table[i].section is not None
             and section_table[symbol_table[i].section].addr is not None
         ],
-        key=lambda i: section_table[symbol_table[i].section].addr
-        + symbol_table[i].offset
-        if symbol_table[i].section != LYN_SEC_ABS
-        else symbol_table[i].offset,
+        key=lambda i: (
+            section_table[symbol_table[i].section].addr + symbol_table[i].offset
+            if symbol_table[i].section != LYN_SEC_ABS
+            else symbol_table[i].offset
+        ),
     )
 
     with open(file_path, "w") as f:
-        f.write("SECTIONS\n")
-
-        for idx in sec_idxes:
-            sec = section_table[idx]
-            f.write(f"  {sec.addr:08X} {len(sec.base_data):08X} {sec.name}\n")
-
         f.write("\nSYMBOLS\n")
 
         for idx in sym_idxes:
@@ -844,7 +964,19 @@ def produce_map_file(file_path: str):
                 sec = section_table[sym.section]
                 addr = sec.addr + sym.offset
 
-                f.write(f"  {addr:08X} {sym.name} ({sec.name}+{sym.offset})\n")
+                if sym.offset >= 0:
+                    loc_fmt = f"{sec.name}+{sym.offset}"
+                else:
+                    loc_fmt = f"{sec.name}-{-sym.offset}"
+
+                f.write(f"  {addr:08X} {sym.name} ({loc_fmt})\n")
+
+        # do sections second because I find it less useful than symbols
+        f.write("SECTIONS\n")
+
+        for idx in sec_idxes:
+            sec = section_table[idx]
+            f.write(f"  {sec.addr:08X} {len(sec.base_data):08X} {sec.name}\n")
 
         f.write("\nFREE REGIONS REMAINING\n")
 
@@ -888,7 +1020,10 @@ def main(args: list[str]):
     # try to print shorter paths
     if len(objects) > 1:
         try:
-            common_path_len = len(commonpath(objects)) + 1
+            common_path_len = len(commonpath(objects))
+
+            if common_path_len > 0:
+                common_path_len += 1  # HACK: omit leading '/'
 
         except ValueError:
             pass
@@ -899,6 +1034,9 @@ def main(args: list[str]):
             add_elf(f, object_path[common_path_len:])
 
     set_fixed_section_addrs()
+
+    # split free regions at fixed sections locations
+    split_free_regions_at_fixed_sections()
 
     # NOTE about free_regions: ideally we prioritize the regions freed by replaces
 
@@ -912,6 +1050,9 @@ def main(args: list[str]):
 
     # check for overlaps!
     check_for_overlaps()
+
+    # check for redefinition of reference symbols
+    check_for_redefined_symbols()
 
     # we shouldn't actually do this...
     # instead, lookup the reference in compute_relocations
