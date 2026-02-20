@@ -35,14 +35,14 @@
 #define lyn_at(addr) LYN__SECTION("__lyn.at_" #addr)
 
 // standalone directives
-#define lyn_free(addr, size) LYN__SECTION("__lyn.meta") LYN__KEEP static char const __lyn_meta_free_##addr[] = "free " #addr " " #size
-#define lyn_purge(name) LYN__SECTION("__lyn.meta") LYN__KEEP static char const __lyn_meta_purge_##name[] = "purge " #name
+#define lyn_free(addr, size) LYN__SECTION("__lyn.meta") LYN__KEEP static char const __lyn$_meta_free_##addr[] = "free " #addr " " #size
+#define lyn_purge(name) LYN__SECTION("__lyn.meta") LYN__KEEP static char const __lyn$_meta_purge_##name[] = "purge " #name
 
 // helpers
-#define lyn_word_at(addr) lyn_at(addr) LYN__KEEP static unsigned int const __lyn_word_at_##addr
-#define lyn_addr_at(addr) lyn_at(addr) LYN__KEEP static void const * const __lyn_addr_at_##addr
-#define lyn_half_at(addr) lyn_at(addr) LYN__KEEP static unsigned short const __lyn_half_at_##addr
-#define lyn_byte_at(addr) lyn_at(addr) LYN__KEEP static unsigned char const __lyn__at_##addr
+#define lyn_word_at(addr) lyn_at(addr) LYN__KEEP static unsigned int const __lyn$_word_at_##addr
+#define lyn_addr_at(addr) lyn_at(addr) LYN__KEEP static void const * const __lyn$_addr_at_##addr
+#define lyn_half_at(addr) lyn_at(addr) LYN__KEEP static unsigned short const __lyn$_half_at_##addr
+#define lyn_byte_at(addr) lyn_at(addr) LYN__KEEP static unsigned char const __lyn$__at_##addr
 
 #define lyn_words_at(addr) lyn_word_at(addr)[]
 #define lyn_addrs_at(addr) lyn_addr_at(addr)[]
