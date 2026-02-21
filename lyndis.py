@@ -95,6 +95,7 @@ class LynSection:
     addr: int | None
     align: int
     do_not_place: bool
+    writable: bool
 
     def __init__(self, name: str, base_data: bytes, align: int = 4) -> None:
         self.name = name
@@ -103,6 +104,7 @@ class LynSection:
         self.addr = None
         self.align = align
         self.do_not_place = False
+        self.writable = False
 
     def __repr__(self):
         return f'LynSection("{self.name}", b"{self.base_data}", {self.relocations}, {self.addr if self.addr is not None else -1:08X})'
@@ -178,6 +180,7 @@ def get_global_symbol(name: str) -> LynSymbol | None:
     return None
 
 
+SHF_WRITE = 0x01
 SHF_ALLOC = 0x02
 SHN_UNDEF = 0
 SHN_ABS = 0xFFF1
@@ -207,6 +210,10 @@ def add_elf(elf_io: BinaryIO, elf_name: str | None):
             )
 
             lyn_sec = LynSection(sec_name, section.data(), section["sh_addralign"])
+
+            if (section["sh_flags"] & SHF_WRITE) != 0:
+                lyn_sec.writable = True
+
             elf_to_lyn_section[i] = len(section_table)
             section_table.append(lyn_sec)
 
@@ -623,6 +630,10 @@ def set_not_fixed_section_addrs():
 
         # check if this should go into the binary, basically
         is_meaningful_data = any(b != 0 for b in sec.base_data)
+        is_writable = sec.writable
+
+        if is_meaningful_data and is_writable:
+            print(f"Writable non-zero sections are not supported (name = {sec.name})")
 
         if sec.addr is None and this_size > 0:
             for j, (addr, size) in enumerate(free_regions):
@@ -635,10 +646,10 @@ def set_not_fixed_section_addrs():
                 if size < this_size:
                     continue
 
-                # if data is meaningful -> we can only take regions within the binary
-                if is_meaningful_data:
-                    if (addr < bin_beg) or (addr + size > bin_end):
-                        continue
+                in_binary = (addr + size > bin_beg) and (addr < bin_end)
+
+                if is_writable == in_binary:
+                    continue
 
                 free_regions[j] = (addr + this_size, size - this_size)
                 sec.addr = addr

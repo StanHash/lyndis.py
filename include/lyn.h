@@ -42,7 +42,7 @@
 #define lyn_word_at(addr) lyn_at(addr) LYN__KEEP static unsigned int const __lyn$_word_at_##addr
 #define lyn_addr_at(addr) lyn_at(addr) LYN__KEEP static void const * const __lyn$_addr_at_##addr
 #define lyn_half_at(addr) lyn_at(addr) LYN__KEEP static unsigned short const __lyn$_half_at_##addr
-#define lyn_byte_at(addr) lyn_at(addr) LYN__KEEP static unsigned char const __lyn$__at_##addr
+#define lyn_byte_at(addr) lyn_at(addr) LYN__KEEP static unsigned char const __lyn$_byte_at_##addr
 
 #define lyn_words_at(addr) lyn_word_at(addr)[]
 #define lyn_addrs_at(addr) lyn_addr_at(addr)[]
