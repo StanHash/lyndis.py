@@ -803,7 +803,7 @@ def compute_relocations():
                     sec.base_data[off : off + 2] = hi.to_bytes(2, "little")
                     sec.base_data[off + 2 : off + 4] = lo.to_bytes(2, "little")
 
-                case 28:  # R_ARM_CALL
+                case 28 | 29 | 1:  # R_ARM_CALL, R_ARM_JUMP24, R_ARM_PC24
                     base = int.from_bytes(sec.base_data[off : off + 4], "little")
                     value = lookup_sym_value(rel.symbol) - (sec.addr + off)
 
@@ -822,7 +822,7 @@ def compute_relocations():
                     if (complete_value < -0x2000000) or (complete_value >= 0x2000000):
                         target_name = lookup_sym_name(rel.symbol)
                         print(
-                            f"ERROR: {sec.addr + off:08X}: {sec.name}+{off}: {'target' if target_name is None else target_name} out of BL range (disp: {complete_value:X})"
+                            f"ERROR: {sec.addr + off:08X}: {sec.name}+{off}: {'target' if target_name is None else target_name} out of ARM B range (disp: {complete_value:X})"
                         )
                         exit(1)
 
